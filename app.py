@@ -47,10 +47,8 @@ def extract_text_from_image(filepath):
         from PIL import Image
         img = Image.open(filepath).convert("RGB")
         return pytesseract.image_to_string(img)
-    except ImportError:
-        return "[OCR unavailable: tesseract not installed on this server]"
-    except Exception as e:
-        return f"[OCR error: {str(e)}]"
+    except Exception:
+        return None  # tesseract not available
 
 
 # ── Module 2: Parse text from OCR ──────────────────────────────────────────
@@ -236,12 +234,21 @@ def process_files():
                                     "data": inv, "warnings": warnings})
         else:
             raw_text = extract_text_from_image(filepath)
-            inv = parse_invoice_from_text(raw_text)
-            warnings = validate_invoice(inv, seen_invoice_numbers)
-            results.append({"filename": filename,
-                            "status": "warning" if warnings else "success",
-                            "data": inv, "warnings": warnings,
-                            "raw_text_preview": raw_text[:300]})
+            if raw_text is None:
+                results.append({
+                    "filename": filename,
+                    "status": "error",
+                    "error": "Image OCR is not available on this server. Please convert your invoice to CSV format and upload that instead.",
+                    "data": {},
+                    "warnings": [],
+                })
+            else:
+                inv = parse_invoice_from_text(raw_text)
+                warnings = validate_invoice(inv, seen_invoice_numbers)
+                results.append({"filename": filename,
+                                "status": "warning" if warnings else "success",
+                                "data": inv, "warnings": warnings,
+                                "raw_text_preview": raw_text[:300]})
 
         try:
             os.remove(filepath)
