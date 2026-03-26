@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>InvoiceIQ — Automated Invoice Processor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <style>
+    /* ── CSS Variables ── */
+    :root {
+      --bg:        #0a0f1e;
+      --surface:   #111827;
+      --surface2:  #1a2236;
+      --border:    #1f2d44;
+      --accent:    #00d4ff;
+      --accent2:   #7c3aed;
+      --success:   #10b981;
+      --warning:   #f59e0b;
+      --error:     #ef4444;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --mono:      'DM Mono', monospace;
+      --sans:      'DM Sans', sans-serif;
+      --display:   'Syne', sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Background grid ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Glow orbs ── */
+    .orb {
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .orb-1 { width: 600px; height: 600px; background: rgba(0,212,255,0.06); top: -200px; right: -200px; }
+    .orb-2 { width: 500px; height: 500px; background: rgba(124,58,237,0.07); bottom: -100px; left: -150px; }
+
+    /* ── Layout ── */
+    .wrapper {
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 48px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 40px; height: 40px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+    }
+
+    .logo-text {
+      font-family: var(--display);
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+    .logo-text span { color: var(--accent); }
+
+    .header-badge {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 4px 12px;
+      border-radius: 99px;
+    }
+
+    /* ── Upload Section ── */
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 56px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .upload-zone:hover,
+    .upload-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(0,212,255,0.03);
+    }
+
+    .upload-zone::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 50%, rgba(0,212,255,0.04), transparent 70%);
+      pointer-events: none;
+    }
+
+    .upload-icon {
+      width: 64px; height: 64px;
+      margin: 0 auto 16px;
+      background: linear-gradient(135deg, rgba(0,212,255,0.15), rgba(124,58,237,0.15));
+      border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+    }
+
+    .upload-title {
+      font-family: var(--display);
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .upload-sub {
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+
+    .file-types {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .file-type-tag {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 99px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--accent);
+    }
+
+    input[type="file"] { display: none; }
+
+    /* ── File List ── */
+    .file-list {
+      margin-top: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 14px;
+      animation: slideIn 0.2s ease;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .file-icon { font-size: 18px; }
+    .file-name { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--text); }
+    .file-size { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+    .file-remove {
+      cursor: pointer; color: var(--muted);
+      font-size: 16px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .file-remove:hover { color: var(--error); }
+
+    /* ── Process Button ── */
+    .process-btn {
+      width: 100%;
+      margin-top: 20px;
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent), #0099cc);
+      color: #0a0f1e;
+      font-family: var(--display);
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.3px;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .process-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,212,255,0.25); }
+    .process-btn:active { transform: translateY(0); }
+    .process-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* ── Spinner ── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid rgba(10,15,30,0.3);
+      border-top-color: #0a0f1e;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Stats Bar ── */
+    .stats-bar {
+      display: none;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: 28px 0;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-family: var(--display);
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-card.success .stat-value { color: var(--success); }
+    .stat-card.warn    .stat-value { color: var(--warning); }
+    .stat-card.err     .stat-value { color: var(--error); }
+    .stat-card.time    .stat-value { color: var(--accent); font-size: 22px; }
+
+    /* ── Download Buttons ── */
+    .download-row {
+      display: none;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .dl-btn {
+      flex: 1;
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-family: var(--display);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+
+    .dl-btn:hover { background: var(--surface2); border-color: var(--accent); color: var(--accent); }
+    .dl-btn.excel:hover { border-color: var(--success); color: var(--success); }
+    .dl-btn.json-btn:hover { border-color: var(--warning); color: var(--warning); }
+
+    /* ── Results Table ── */
+    .results-section { display: none; }
+
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+
+    .results-title {
+      font-family: var(--display);
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .results-count {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .table-wrapper {
+      overflow-x: auto;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead th {
+      background: var(--surface2);
+      padding: 12px 16px;
+      text-align: left;
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+    tbody tr.has-warning { background: rgba(245,158,11,0.04); }
+    tbody tr.has-error   { background: rgba(239,68,68,0.04); }
+
+    tbody td {
+      padding: 12px 16px;
+      vertical-align: middle;
+    }
+
+    .cell-filename { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+    .cell-missing  { color: var(--error); font-style: italic; font-size: 12px; }
+    .cell-value    { color: var(--text); font-family: var(--mono); font-size: 12px; }
+
+    .warn-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      margin: 2px;
+      white-space: nowrap;
+    }
+
+    .warn-chip.missing  { background: rgba(239,68,68,0.12); color: var(--error); border: 1px solid rgba(239,68,68,0.2); }
+    .warn-chip.duplicate{ background: rgba(245,158,11,0.12); color: var(--warning); border: 1px solid rgba(245,158,11,0.2); }
+    .warn-chip.ok       { background: rgba(16,185,129,0.1); color: var(--success); border: 1px solid rgba(16,185,129,0.2); }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    .status-dot.success { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .status-dot.warning { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+    .status-dot.error   { background: var(--error);   box-shadow: 0 0 6px var(--error); }
+
+    /* ── Error Toast ── */
+    .toast {
+      display: none;
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface2);
+      border: 1px solid var(--error);
+      color: var(--error);
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-size: 14px;
+      z-index: 100;
+      animation: toastIn 0.2s ease;
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Section label ── */
+    .section-label {
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .stats-bar { grid-template-columns: repeat(2, 1fr); }
+      header { flex-direction: column; gap: 12px; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+
+<div class="wrapper">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🧾</div>
+      <div class="logo-text">Invoice<span>IQ</span></div>
+    </div>
+    <div class="header-badge">v1.0 · Batch Processing</div>
+  </header>
+
+  <!-- Upload Section -->
+  <div class="section-label">Upload Invoices</div>
+  <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+    <div class="upload-icon">📂</div>
+    <div class="upload-title">Drop files or click to upload</div>
+    <div class="upload-sub">Supports JPG, PNG (scanned invoices) and CSV (data exports)</div>
+    <div class="file-types">
+      <span class="file-type-tag">.JPG</span>
+      <span class="file-type-tag">.PNG</span>
+      <span class="file-type-tag">.CSV</span>
+    </div>
+    <input type="file" id="fileInput" multiple accept=".jpg,.jpeg,.png,.csv"/>
+  </div>
+
+  <!-- File List -->
+  <div class="file-list" id="fileList"></div>
+
+  <!-- Process Button -->
+  <button class="process-btn" id="processBtn" onclick="processFiles()">
+    <span class="spinner" id="spinner"></span>
+    <span id="btnText">⚡ Process Invoices</span>
+  </button>
+
+  <!-- Stats Bar -->
+  <div class="stats-bar" id="statsBar">
+    <div class="stat-card success">
+      <div class="stat-value" id="statSuccess">0</div>
+      <div class="stat-label">Clean</div>
+    </div>
+    <div class="stat-card warn">
+      <div class="stat-value" id="statWarn">0</div>
+      <div class="stat-label">Warnings</div>
+    </div>
+    <div class="stat-card err">
+      <div class="stat-value" id="statErr">0</div>
+      <div class="stat-label">Errors</div>
+    </div>
+    <div class="stat-card time">
+      <div class="stat-value" id="statTime">—</div>
+      <div class="stat-label">Proc. Time (s)</div>
+    </div>
+  </div>
+
+  <!-- Download Buttons -->
+  <div class="download-row" id="downloadRow">
+    <a class="dl-btn excel" id="dlExcel" href="#">
+      📊 Download Excel
+    </a>
+    <a class="dl-btn json-btn" id="dlJson" href="#">
+      { } Download JSON
+    </a>
+  </div>
+
+  <!-- Results Table -->
+  <div class="results-section" id="resultsSection">
+    <div class="results-header">
+      <div class="results-title">Extracted Invoice Data</div>
+      <div class="results-count" id="resultsCount"></div>
+    </div>
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>File</th>
+            <th>Invoice #</th>
+            <th>Date</th>
+            <th>Vendor</th>
+            <th>Total Amount</th>
+            <th>GST Number</th>
+            <th>Warnings</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+  // ── Backend URL: auto-detects local vs cloud ──
+  const API_BASE = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    ? "http://localhost:5000"
+    : window.location.origin;
+
+  let selectedFiles = [];
+
+  // ── Drag and Drop ──
+  const zone = document.getElementById("uploadZone");
+  zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag-over"); });
+  zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
+  zone.addEventListener("drop", e => {
+    e.preventDefault();
+    zone.classList.remove("drag-over");
+    addFiles([...e.dataTransfer.files]);
+  });
+
+  // ── File Input Change ──
+  document.getElementById("fileInput").addEventListener("change", e => {
+    addFiles([...e.target.files]);
+    e.target.value = ""; // reset so same file can be re-added
+  });
+
+  function addFiles(newFiles) {
+    const allowed = ["jpg", "jpeg", "png", "csv"];
+    newFiles.forEach(f => {
+      const ext = f.name.split(".").pop().toLowerCase();
+      if (!allowed.includes(ext)) { showToast(`❌ ${f.name}: unsupported type`); return; }
+      if (selectedFiles.find(x => x.name === f.name)) return; // deduplicate
+      selectedFiles.push(f);
+    });
+    renderFileList();
+  }
+
+  function removeFile(name) {
+    selectedFiles = selectedFiles.filter(f => f.name !== name);
+    renderFileList();
+  }
+
+  function renderFileList() {
+    const list = document.getElementById("fileList");
+    list.innerHTML = "";
+    selectedFiles.forEach(f => {
+      const ext = f.name.split(".").pop().toLowerCase();
+      const icon = ext === "csv" ? "📄" : "🖼️";
+      const size = (f.size / 1024).toFixed(1) + " KB";
+      const el = document.createElement("div");
+      el.className = "file-item";
+      el.innerHTML = `
+        <span class="file-icon">${icon}</span>
+        <span class="file-name">${f.name}</span>
+        <span class="file-size">${size}</span>
+        <span class="file-remove" onclick="removeFile('${f.name}')" title="Remove">✕</span>
+      `;
+      list.appendChild(el);
+    });
+  }
+
+  // ── Format helpers ──
+  function cell(val) {
+    if (!val || val === "None" || val === "null") {
+      return `<span class="cell-missing">—</span>`;
+    }
+    return `<span class="cell-value">${val}</span>`;
+  }
+
+  function warningChips(warnings) {
+    if (!warnings || warnings.length === 0) {
+      return `<span class="warn-chip ok">✓ OK</span>`;
+    }
+    return warnings.map(w => {
+      const cls = w.toLowerCase().includes("duplicate") ? "duplicate" : "missing";
+      return `<span class="warn-chip ${cls}">${w}</span>`;
+    }).join("");
+  }
+
+  // ── Main: Process Files ──
+  async function processFiles() {
+    if (selectedFiles.length === 0) {
+      showToast("⚠️ Please upload at least one file first.");
+      return;
+    }
+
+    const btn = document.getElementById("processBtn");
+    const spinner = document.getElementById("spinner");
+    const btnText = document.getElementById("btnText");
+
+    btn.disabled = true;
+    spinner.style.display = "block";
+    btnText.textContent = "Processing…";
+
+    // Hide previous results
+    document.getElementById("statsBar").style.display = "none";
+    document.getElementById("downloadRow").style.display = "none";
+    document.getElementById("resultsSection").style.display = "none";
+
+    const formData = new FormData();
+    selectedFiles.forEach(f => formData.append("files", f));
+
+    try {
+      const res = await fetch(`${API_BASE}/process`, { method: "POST", body: formData });
+
+      if (!res.ok) {
+        const err = await res.json();
+        showToast("❌ Server error: " + (err.error || res.statusText));
+        return;
+      }
+
+      const data = await res.json();
+      renderResults(data);
+
+    } catch (err) {
+      showToast("❌ Could not connect to backend. Make sure Flask is running on port 5000.");
+    } finally {
+      btn.disabled = false;
+      spinner.style.display = "none";
+      btnText.textContent = "⚡ Process Invoices";
+    }
+  }
+
+  function renderResults(data) {
+    const { results, processing_time, summary, session_id } = data;
+
+    // Stats
+    document.getElementById("statSuccess").textContent = summary.success;
+    document.getElementById("statWarn").textContent = summary.warnings;
+    document.getElementById("statErr").textContent = summary.errors;
+    document.getElementById("statTime").textContent = processing_time + "s";
+    document.getElementById("statsBar").style.display = "grid";
+
+    // Download links
+    document.getElementById("dlExcel").href = `${API_BASE}/download/excel/${session_id}`;
+    document.getElementById("dlJson").href = `${API_BASE}/download/json/${session_id}`;
+    document.getElementById("downloadRow").style.display = "flex";
+
+    // Table
+    const tbody = document.getElementById("tableBody");
+    tbody.innerHTML = "";
+
+    results.forEach(r => {
+      const tr = document.createElement("tr");
+      const rowClass = r.status === "error" ? "has-error" : r.status === "warning" ? "has-warning" : "";
+      if (rowClass) tr.className = rowClass;
+
+      const dotClass = r.status === "success" ? "success" : r.status === "warning" ? "warning" : "error";
+      const d = r.data || {};
+
+      tr.innerHTML = `
+        <td><span class="status-dot ${dotClass}"></span></td>
+        <td><span class="cell-filename">${r.filename}</span></td>
+        <td>${cell(d.invoice_number)}</td>
+        <td>${cell(d.date)}</td>
+        <td>${cell(d.vendor_name)}</td>
+        <td>${cell(d.total_amount ? "₹ " + d.total_amount : null)}</td>
+        <td>${cell(d.gst_number)}</td>
+        <td>${r.status === "error" ? `<span class="warn-chip missing">${r.error || "Parse error"}</span>` : warningChips(r.warnings)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById("resultsCount").textContent = `${results.length} record${results.length !== 1 ? "s" : ""}`;
+    document.getElementById("resultsSection").style.display = "block";
+
+    // Smooth scroll to results
+    document.getElementById("statsBar").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ── Toast ──
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.style.display = "block";
+    setTimeout(() => { t.style.display = "none"; }, 4000);
+  }
+</script>
+</body>
+</html>
