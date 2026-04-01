@@ -1,39 +1,49 @@
 """
 InvoiceIQ - Full SaaS Backend
-Login + Usage Limits + Razorpay Payment
+Fixed: persistent DB path, proper session config, smart auth flow
 """
 
 import os, re, json, time, uuid, io
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify, send_file, session, redirect, url_for
+from flask import Flask, request, jsonify, send_file, session
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import pandas as pd
 
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = "/tmp/invoiceiq_uploads"
 OUTPUT_FOLDER = "/tmp/invoiceiq_outputs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
-app.secret_key = os.environ.get("SECRET_KEY", "invoiceiq-secret-2024-change-this")
-app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", f"sqlite:///{BASE_DIR}/invoiceiq.db")
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+# ── DB path: use /tmp on Render (writable), local file otherwise ──────────
+DB_PATH = os.environ.get("DATABASE_URL", f"sqlite:////tmp/invoiceiq.db")
+# Render sets DATABASE_URL for Postgres. For SQLite on free tier, /tmp is writable.
+if DB_PATH.startswith("sqlite:///") and not DB_PATH.startswith("sqlite:////tmp"):
+    DB_PATH = f"sqlite:////tmp/invoiceiq.db"
 
-CORS(app, supports_credentials=True)
+app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
+
+# ── Session & security config ──────────────────────────────────────────────
+app.secret_key = os.environ.get("SECRET_KEY", "invoiceiq-secret-2024-change-in-render")
+app.config["SQLALCHEMY_DATABASE_URI"]        = DB_PATH
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["UPLOAD_FOLDER"]                  = UPLOAD_FOLDER
+app.config["MAX_CONTENT_LENGTH"]             = 16 * 1024 * 1024
+app.config["SESSION_COOKIE_SAMESITE"]        = "Lax"
+app.config["SESSION_COOKIE_SECURE"]          = False   # set True only with HTTPS + custom domain
+app.config["PERMANENT_SESSION_LIFETIME"]     = timedelta(days=30)
+
+CORS(app, supports_credentials=True, origins="*")
 db = SQLAlchemy(app)
 
-# ── Config ─────────────────────────────────────────────────────────────────
-FREE_INVOICE_LIMIT  = 5
-PAID_PRICE_DISPLAY  = "₹499/month"
-RAZORPAY_LINK       = os.environ.get("RAZORPAY_LINK", "https://razorpay.me/your-payment-link")
-ALLOWED_EXTENSIONS  = {"jpg", "jpeg", "png", "csv"}
+FREE_LIMIT     = 5
+PAID_PRICE     = "₹499/month"
+RAZORPAY_LINK  = os.environ.get("RAZORPAY_LINK", "https://razorpay.me/your-link")
+ALLOWED_EXT    = {"jpg", "jpeg", "png", "csv"}
 
 # ── Models ─────────────────────────────────────────────────────────────────
 class User(db.Model):
@@ -48,11 +58,10 @@ class User(db.Model):
     def set_password(self, pw):   self.password_hash = generate_password_hash(pw)
     def check_password(self, pw): return check_password_hash(self.password_hash, pw)
     def to_dict(self):
-        return {
-            "id": self.id, "email": self.email, "name": self.name,
-            "is_paid": self.is_paid, "invoices_used": self.invoices_used,
-            "invoices_remaining": None if self.is_paid else max(0, FREE_INVOICE_LIMIT - self.invoices_used),
-        }
+        left = None if self.is_paid else max(0, FREE_LIMIT - self.invoices_used)
+        return {"id":self.id,"email":self.email,"name":self.name,
+                "is_paid":self.is_paid,"invoices_used":self.invoices_used,
+                "invoices_remaining":left}
 
 with app.app_context():
     db.create_all()
@@ -62,20 +71,95 @@ def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if "user_id" not in session:
-            return jsonify({"error": "Login required", "code": "AUTH_REQUIRED"}), 401
+            return jsonify({"error":"Login required","code":"AUTH_REQUIRED"}), 401
         return f(*args, **kwargs)
     return decorated
 
 def get_current_user():
-    if "user_id" not in session:
-        return None
+    if "user_id" not in session: return None
     return User.query.get(session["user_id"])
 
-# ── File helpers ───────────────────────────────────────────────────────────
 def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    return "." in filename and filename.rsplit(".",1)[1].lower() in ALLOWED_EXT
 
-# ── Module 1: OCR ──────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# AUTH ROUTES
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.route("/auth/check-email", methods=["POST"])
+def check_email():
+    """Tell frontend whether this email is registered or new."""
+    data  = request.get_json()
+    email = (data.get("email") or "").strip().lower()
+    if not email or not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        return jsonify({"error": "Invalid email"}), 400
+    exists = User.query.filter_by(email=email).first() is not None
+    return jsonify({"exists": exists, "email": email})
+
+@app.route("/auth/signup", methods=["POST"])
+def signup():
+    data  = request.get_json()
+    name  = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    pw    = data.get("password") or ""
+    if not name or not email or not pw:
+        return jsonify({"error":"Name, email and password are required"}), 400
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        return jsonify({"error":"Invalid email address"}), 400
+    if len(pw) < 6:
+        return jsonify({"error":"Password must be at least 6 characters"}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error":"An account with this email already exists"}), 409
+    user = User(name=name, email=email)
+    user.set_password(pw)
+    db.session.add(user)
+    db.session.commit()
+    session.permanent = True
+    session["user_id"] = user.id
+    return jsonify({"message":"Account created!","user":user.to_dict()}), 201
+
+@app.route("/auth/login", methods=["POST"])
+def login():
+    data  = request.get_json()
+    email = (data.get("email") or "").strip().lower()
+    pw    = data.get("password") or ""
+    user  = User.query.filter_by(email=email).first()
+    if not user or not user.check_password(pw):
+        return jsonify({"error":"Invalid email or password"}), 401
+    session.permanent = True
+    session["user_id"] = user.id
+    return jsonify({"message":"Logged in!","user":user.to_dict()})
+
+@app.route("/auth/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"message":"Logged out"})
+
+@app.route("/auth/me")
+def me():
+    user = get_current_user()
+    if not user: return jsonify({"error":"Not logged in","code":"AUTH_REQUIRED"}), 401
+    return jsonify({"user":user.to_dict()})
+
+# ── Payment routes ─────────────────────────────────────────────────────────
+@app.route("/payment/info")
+@login_required
+def payment_info():
+    return jsonify({"price":PAID_PRICE,"payment_link":RAZORPAY_LINK,"free_limit":FREE_LIMIT,
+                    "features":["Unlimited invoice processing","Batch CSV, JPG & PNG","Excel + JSON export","GST auto-detection","Duplicate alerts"]})
+
+@app.route("/payment/activate", methods=["POST"])
+@login_required
+def activate_paid():
+    data = request.get_json()
+    if not data.get("payment_ref","").strip():
+        return jsonify({"error":"Payment reference required"}), 400
+    user = get_current_user()
+    user.is_paid = True
+    db.session.commit()
+    return jsonify({"message":"Account upgraded to Pro!","user":user.to_dict()})
+
+# ── OCR ────────────────────────────────────────────────────────────────────
 def extract_text_from_image(filepath):
     try:
         import pytesseract
@@ -84,9 +168,8 @@ def extract_text_from_image(filepath):
     except Exception:
         return None
 
-# ── Module 2: Parse OCR text ───────────────────────────────────────────────
 def parse_invoice_from_text(text):
-    data = {k: None for k in ["invoice_number","date","vendor_name","total_amount","gst_number"]}
+    data = {k:None for k in ["invoice_number","date","vendor_name","total_amount","gst_number"]}
     m = re.search(r"(?:invoice\s*(?:no|number|#)[:\s#]*)([\w\-/]+)", text, re.IGNORECASE)
     if m: data["invoice_number"] = m.group(1).strip()
     else:
@@ -102,15 +185,14 @@ def parse_invoice_from_text(text):
     if m: data["gst_number"] = m.group(1).upper()
     return data
 
-# ── Module 3: Parse CSV ────────────────────────────────────────────────────
 def parse_invoice_from_csv(filepath):
     invoices = []
     ALIASES = {
-        "invoice_number": ["invoice_number","invoice no","invoice#","inv no","inv_no","invoice id","bill no"],
-        "date":           ["date","invoice_date","bill date","billing date","invoice date"],
-        "vendor_name":    ["vendor_name","vendor","seller","company","from","supplier","party name"],
-        "total_amount":   ["total_amount","total","amount","grand total","amount due","net amount","payable"],
-        "gst_number":     ["gst_number","gst no","gst","gstin","tax id","gst number"],
+        "invoice_number":["invoice_number","invoice no","invoice#","inv no","inv_no","invoice id","bill no"],
+        "date":["date","invoice_date","bill date","billing date","invoice date"],
+        "vendor_name":["vendor_name","vendor","seller","company","from","supplier","party name"],
+        "total_amount":["total_amount","total","amount","grand total","amount due","net amount","payable"],
+        "gst_number":["gst_number","gst no","gst","gstin","tax id","gst number"],
     }
     try:
         df = pd.read_csv(filepath, dtype=str)
@@ -123,7 +205,7 @@ def parse_invoice_from_csv(filepath):
                         if col not in col_map: col_map[col] = field
                         break
         for _, row in df.iterrows():
-            inv = {k: None for k in ["invoice_number","date","vendor_name","total_amount","gst_number"]}
+            inv = {k:None for k in ["invoice_number","date","vendor_name","total_amount","gst_number"]}
             for col, field in col_map.items():
                 val = row.get(col)
                 if pd.notna(val) and str(val).strip(): inv[field] = str(val).strip()
@@ -131,7 +213,6 @@ def parse_invoice_from_csv(filepath):
     except Exception: pass
     return invoices
 
-# ── Module 4: Validate ─────────────────────────────────────────────────────
 def validate_invoice(inv, seen):
     warnings = []
     for f in ["invoice_number","date","vendor_name","total_amount"]:
@@ -142,20 +223,14 @@ def validate_invoice(inv, seen):
         else: seen.add(inv_no)
     return warnings
 
-# ── Module 5: Excel export ─────────────────────────────────────────────────
 def export_to_excel(items, output_path):
     rows = []
     for item in items:
         inv = item.get("data") or {}
-        rows.append({
-            "File Name":      item.get("filename",""),
-            "Invoice Number": inv.get("invoice_number",""),
-            "Date":           inv.get("date",""),
-            "Vendor Name":    inv.get("vendor_name",""),
-            "Total Amount":   inv.get("total_amount",""),
-            "GST Number":     inv.get("gst_number",""),
-            "Warnings":       "; ".join(item.get("warnings",[])) or "OK",
-        })
+        rows.append({"File Name":item.get("filename",""),"Invoice Number":inv.get("invoice_number",""),
+                     "Date":inv.get("date",""),"Vendor Name":inv.get("vendor_name",""),
+                     "Total Amount":inv.get("total_amount",""),"GST Number":inv.get("gst_number",""),
+                     "Warnings":"; ".join(item.get("warnings",[])) or "OK"})
     df = pd.DataFrame(rows)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Invoices")
@@ -179,231 +254,93 @@ def export_to_excel(items, output_path):
             ws.column_dimensions[get_column_letter(ci)].width = min(max((len(v) for v in vals), default=10)+4, 45)
     return output_path
 
-# ════════════════════════════════════════════════════════════════════════════
-# AUTH ROUTES
-# ════════════════════════════════════════════════════════════════════════════
-
-@app.route("/auth/signup", methods=["POST"])
-def signup():
-    data = request.get_json()
-    name  = (data.get("name") or "").strip()
-    email = (data.get("email") or "").strip().lower()
-    pw    = data.get("password") or ""
-    if not name or not email or not pw:
-        return jsonify({"error": "Name, email and password are required"}), 400
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return jsonify({"error": "Invalid email address"}), 400
-    if len(pw) < 6:
-        return jsonify({"error": "Password must be at least 6 characters"}), 400
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "An account with this email already exists"}), 409
-    user = User(name=name, email=email)
-    user.set_password(pw)
-    db.session.add(user)
-    db.session.commit()
-    session["user_id"] = user.id
-    return jsonify({"message": "Account created!", "user": user.to_dict()}), 201
-
-@app.route("/auth/login", methods=["POST"])
-def login():
-    data  = request.get_json()
-    email = (data.get("email") or "").strip().lower()
-    pw    = data.get("password") or ""
-    user  = User.query.filter_by(email=email).first()
-    if not user or not user.check_password(pw):
-        return jsonify({"error": "Invalid email or password"}), 401
-    session["user_id"] = user.id
-    return jsonify({"message": "Logged in!", "user": user.to_dict()})
-
-@app.route("/auth/logout", methods=["POST"])
-def logout():
-    session.clear()
-    return jsonify({"message": "Logged out"})
-
-@app.route("/auth/me")
-def me():
-    user = get_current_user()
-    if not user: return jsonify({"error": "Not logged in", "code": "AUTH_REQUIRED"}), 401
-    return jsonify({"user": user.to_dict()})
-
-# ════════════════════════════════════════════════════════════════════════════
-# PAYMENT ROUTES
-# ════════════════════════════════════════════════════════════════════════════
-
-@app.route("/payment/info")
-@login_required
-def payment_info():
-    return jsonify({
-        "price":         PAID_PRICE_DISPLAY,
-        "payment_link":  RAZORPAY_LINK,
-        "free_limit":    FREE_INVOICE_LIMIT,
-        "features": [
-            "Unlimited invoice processing",
-            "Batch upload (JPG, PNG, CSV)",
-            "Excel + JSON export",
-            "Duplicate & missing field detection",
-            "Priority support",
-        ]
-    })
-
-@app.route("/payment/activate", methods=["POST"])
-@login_required
-def activate_paid():
-    """
-    In production: verify Razorpay webhook/payment ID here.
-    For now: accept a payment_ref code and activate manually.
-    """
-    data       = request.get_json()
-    payment_ref = data.get("payment_ref", "").strip()
-    if not payment_ref:
-        return jsonify({"error": "Payment reference required"}), 400
-    user = get_current_user()
-    user.is_paid = True
-    db.session.commit()
-    return jsonify({"message": "Account upgraded to Pro!", "user": user.to_dict()})
-
-# ════════════════════════════════════════════════════════════════════════════
-# PROCESS ROUTE (protected + usage limited)
-# ════════════════════════════════════════════════════════════════════════════
-
+# ── Process route ──────────────────────────────────────────────────────────
 @app.route("/process", methods=["POST"])
 @login_required
 def process_files():
     user = get_current_user()
-
-    # Count how many invoices are in this upload first
     files = request.files.getlist("files")
-    if not files or all(f.filename == "" for f in files):
-        return jsonify({"error": "No files selected"}), 400
+    if not files or all(f.filename=="" for f in files):
+        return jsonify({"error":"No files selected"}), 400
 
-    # Estimate invoice count (each CSV row = 1, each image = 1)
-    # We'll enforce limit after processing
-    if not user.is_paid:
-        remaining = FREE_INVOICE_LIMIT - user.invoices_used
-        if remaining <= 0:
-            return jsonify({
-                "error": "free_limit_reached",
-                "message": f"You've used all {FREE_INVOICE_LIMIT} free invoices. Upgrade to Pro for unlimited processing.",
-                "payment_link": RAZORPAY_LINK,
-                "price": PAID_PRICE_DISPLAY,
-            }), 402
+    if not user.is_paid and (user.invoices_used >= FREE_LIMIT):
+        return jsonify({"error":"free_limit_reached",
+                        "message":f"You've used all {FREE_LIMIT} free invoices.",
+                        "payment_link":RAZORPAY_LINK,"price":PAID_PRICE}), 402
 
-    seen   = set()
-    results = []
-    start  = time.time()
-    invoice_count = 0
+    seen = set(); results = []; start = time.time(); count = 0
 
     for file in files:
         if not file.filename: continue
         if not allowed_file(file.filename):
-            results.append({"filename": file.filename, "status": "error",
-                            "error": "Unsupported type. Use JPG, PNG, or CSV.", "data": {}, "warnings": []})
-            continue
-
+            results.append({"filename":file.filename,"status":"error","error":"Unsupported type. Use JPG, PNG, or CSV.","data":{},"warnings":[]}); continue
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
-        ext = filename.rsplit(".", 1)[1].lower()
-
+        ext = filename.rsplit(".",1)[1].lower()
         if ext == "csv":
-            parsed_list = parse_invoice_from_csv(filepath)
-            if not parsed_list:
-                results.append({"filename": filename, "status": "error",
-                                "error": "Could not parse CSV.", "data": {}, "warnings": []})
+            parsed = parse_invoice_from_csv(filepath)
+            if not parsed:
+                results.append({"filename":filename,"status":"error","error":"Could not parse CSV.","data":{},"warnings":[]})
             else:
-                for idx, inv in enumerate(parsed_list):
-                    # Check limit mid-batch for free users
-                    if not user.is_paid and (user.invoices_used + invoice_count) >= FREE_INVOICE_LIMIT:
-                        results.append({"filename": f"{filename} (row {idx+1})", "status": "error",
-                                        "error": "Free limit reached. Upgrade to process more.",
-                                        "data": {}, "warnings": []})
+                for idx, inv in enumerate(parsed):
+                    if not user.is_paid and (user.invoices_used+count) >= FREE_LIMIT:
+                        results.append({"filename":f"{filename} (row {idx+1})","status":"error","error":"Free limit reached. Upgrade to continue.","data":{},"warnings":[]})
                         continue
-                    warnings = validate_invoice(inv, seen)
-                    results.append({"filename": f"{filename} (row {idx+1})",
-                                    "status": "warning" if warnings else "success",
-                                    "data": inv, "warnings": warnings})
-                    invoice_count += 1
+                    w = validate_invoice(inv, seen)
+                    results.append({"filename":f"{filename} (row {idx+1})","status":"warning" if w else "success","data":inv,"warnings":w})
+                    count += 1
         else:
-            if not user.is_paid and (user.invoices_used + invoice_count) >= FREE_INVOICE_LIMIT:
-                results.append({"filename": filename, "status": "error",
-                                "error": "Free limit reached. Upgrade to process more.",
-                                "data": {}, "warnings": []})
+            if not user.is_paid and (user.invoices_used+count) >= FREE_LIMIT:
+                results.append({"filename":filename,"status":"error","error":"Free limit reached. Upgrade to continue.","data":{},"warnings":[]})
             else:
-                raw_text = extract_text_from_image(filepath)
-                if raw_text is None:
-                    results.append({"filename": filename, "status": "error",
-                                    "error": "Image OCR unavailable. Please use CSV format.", "data": {}, "warnings": []})
+                raw = extract_text_from_image(filepath)
+                if raw is None:
+                    results.append({"filename":filename,"status":"error","error":"Image OCR unavailable. Please use CSV format.","data":{},"warnings":[]})
                 else:
-                    inv = parse_invoice_from_text(raw_text)
-                    warnings = validate_invoice(inv, seen)
-                    results.append({"filename": filename,
-                                    "status": "warning" if warnings else "success",
-                                    "data": inv, "warnings": warnings,
-                                    "raw_text_preview": raw_text[:300]})
-                    invoice_count += 1
+                    inv = parse_invoice_from_text(raw)
+                    w = validate_invoice(inv, seen)
+                    results.append({"filename":filename,"status":"warning" if w else "success","data":inv,"warnings":w,"raw_text_preview":raw[:300]})
+                    count += 1
         try: os.remove(filepath)
         except: pass
 
-    # Update usage count
-    user.invoices_used += invoice_count
+    user.invoices_used += count
     db.session.commit()
-
-    elapsed    = round(time.time() - start, 2)
+    elapsed = round(time.time()-start, 2)
     session_id = str(uuid.uuid4())[:8]
-
-    json_path = os.path.join(OUTPUT_FOLDER, f"invoices_{session_id}.json")
-    with open(json_path, "w") as f: json.dump(results, f, indent=2)
-
-    excel_path = os.path.join(OUTPUT_FOLDER, f"invoices_{session_id}.xlsx")
-    export_to_excel(results, excel_path)
-
-    return jsonify({
-        "results":          results,
-        "processing_time":  elapsed,
-        "session_id":       session_id,
-        "invoices_used":    user.invoices_used,
-        "is_paid":          user.is_paid,
-        "invoices_remaining": None if user.is_paid else max(0, FREE_INVOICE_LIMIT - user.invoices_used),
-        "summary": {
-            "success":  sum(1 for r in results if r["status"] == "success"),
-            "warnings": sum(1 for r in results if r["status"] == "warning"),
-            "errors":   sum(1 for r in results if r["status"] == "error"),
-        },
-    })
-
-# ════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD ROUTES
-# ════════════════════════════════════════════════════════════════════════════
+    with open(os.path.join(OUTPUT_FOLDER,f"invoices_{session_id}.json"),"w") as f: json.dump(results,f,indent=2)
+    export_to_excel(results, os.path.join(OUTPUT_FOLDER,f"invoices_{session_id}.xlsx"))
+    return jsonify({"results":results,"processing_time":elapsed,"session_id":session_id,
+                    "invoices_used":user.invoices_used,"is_paid":user.is_paid,
+                    "invoices_remaining":None if user.is_paid else max(0,FREE_LIMIT-user.invoices_used),
+                    "summary":{"success":sum(1 for r in results if r["status"]=="success"),
+                               "warnings":sum(1 for r in results if r["status"]=="warning"),
+                               "errors":sum(1 for r in results if r["status"]=="error")}})
 
 @app.route("/download/excel/<session_id>")
 @login_required
 def download_excel(session_id):
-    if not re.match(r'^[a-f0-9]{8}$', session_id):
-        return jsonify({"error": "Invalid session"}), 400
-    path = os.path.join(OUTPUT_FOLDER, f"invoices_{session_id}.xlsx")
-    if not os.path.exists(path): return jsonify({"error": "File not found"}), 404
+    if not re.match(r'^[a-f0-9]{8}$', session_id): return jsonify({"error":"Invalid session"}), 400
+    path = os.path.join(OUTPUT_FOLDER,f"invoices_{session_id}.xlsx")
+    if not os.path.exists(path): return jsonify({"error":"File not found"}), 404
     return send_file(path, as_attachment=True, download_name="invoices.xlsx")
 
 @app.route("/download/json/<session_id>")
 @login_required
 def download_json(session_id):
-    if not re.match(r'^[a-f0-9]{8}$', session_id):
-        return jsonify({"error": "Invalid session"}), 400
-    path = os.path.join(OUTPUT_FOLDER, f"invoices_{session_id}.json")
-    if not os.path.exists(path): return jsonify({"error": "File not found"}), 404
+    if not re.match(r'^[a-f0-9]{8}$', session_id): return jsonify({"error":"Invalid session"}), 400
+    path = os.path.join(OUTPUT_FOLDER,f"invoices_{session_id}.json")
+    if not os.path.exists(path): return jsonify({"error":"File not found"}), 404
     return send_file(path, as_attachment=True, download_name="invoices.json")
-
-# ════════════════════════════════════════════════════════════════════════════
-# STATIC + HEALTH
-# ════════════════════════════════════════════════════════════════════════════
 
 @app.route("/")
 def index():
-    return send_file(os.path.join(BASE_DIR, "index.html"))
+    return send_file(os.path.join(BASE_DIR,"index.html"))
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.now().isoformat()})
+    return jsonify({"status":"ok","time":datetime.now().isoformat()})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
