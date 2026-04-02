@@ -502,21 +502,58 @@
 <div class="overlay" id="paywallOverlay">
   <div class="modal">
     <div class="modal-header">
-      <span class="modal-emoji">🚀</span>
-      <div class="modal-title">Upgrade to <span>Pro</span></div>
+      <span class="modal-emoji" id="modalEmoji">🚀</span>
+      <div class="modal-title" id="modalTitle">Upgrade to <span>Pro</span></div>
     </div>
     <div class="modal-body">
-      <div class="price-row"><span class="price-currency">₹</span><span class="price-amount">499</span><span class="price-period">/month</span></div>
-      <div class="price-note">Cancel anytime · Instant activation</div>
-      <div class="features">
-        <div class="feature-item"><span class="feature-check">✓</span> Unlimited invoice processing</div>
-        <div class="feature-item"><span class="feature-check">✓</span> Batch CSV, JPG & PNG uploads</div>
-        <div class="feature-item"><span class="feature-check">✓</span> Excel + JSON export</div>
-        <div class="feature-item"><span class="feature-check">✓</span> GST number auto-detection</div>
-        <div class="feature-item"><span class="feature-check">✓</span> Duplicate invoice alerts</div>
+
+      <!-- SCREEN 1: Pricing -->
+      <div id="payScreen1">
+        <div class="price-row"><span class="price-currency">₹</span><span class="price-amount">499</span><span class="price-period">/month</span></div>
+        <div class="price-note">Cancel anytime · Instant activation</div>
+        <div class="features">
+          <div class="feature-item"><span class="feature-check">✓</span> Unlimited invoice processing</div>
+          <div class="feature-item"><span class="feature-check">✓</span> Batch CSV, JPG & PNG uploads</div>
+          <div class="feature-item"><span class="feature-check">✓</span> Excel + JSON export</div>
+          <div class="feature-item"><span class="feature-check">✓</span> GST number auto-detection</div>
+          <div class="feature-item"><span class="feature-check">✓</span> Duplicate invoice alerts</div>
+        </div>
+        <a class="pay-btn" id="payLink" href="#" target="_blank" onclick="goToPayScreen2()">Pay ₹499 via Razorpay →</a>
+        <button class="modal-close-btn" onclick="closePaywall()">Maybe later</button>
       </div>
-      <a class="pay-btn" id="payLink" href="#" target="_blank" onclick="handlePayClick()">Pay ₹499 via Razorpay →</a>
-      <button class="modal-close-btn" onclick="closePaywall()">Maybe later</button>
+
+      <!-- SCREEN 2: After payment — enter ID -->
+      <div id="payScreen2" style="display:none;">
+        <div style="text-align:center;margin-bottom:20px;">
+          <div style="font-size:14px;color:var(--muted);line-height:1.6;">
+            After completing payment on Razorpay,<br/>copy the <strong style="color:var(--text)">Payment ID</strong> and paste it below.<br/>
+            <span style="font-size:12px;">(It looks like: <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;font-family:var(--mono);">pay_ABC123xyz</code>)</span>
+          </div>
+        </div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;font-size:13px;color:var(--muted);">
+          <strong style="display:block;color:var(--text);margin-bottom:6px;">📍 Where to find your Payment ID:</strong>
+          1. Check your email — Razorpay sends a receipt<br/>
+          2. Or look at the payment success screen<br/>
+          3. It starts with <code style="font-family:var(--mono);color:var(--saffron2);">pay_</code>
+        </div>
+        <div style="margin-bottom:16px;">
+          <input type="text" id="paymentIdInput" class="form-input"
+            placeholder="pay_ABC123xyz"
+            style="font-family:var(--mono);font-size:14px;letter-spacing:0.5px;"/>
+        </div>
+        <div class="auth-error" id="pay-error" style="margin-bottom:12px;"></div>
+        <button class="pay-btn" onclick="submitPaymentId()" id="activateBtn">✅ Activate Pro Account</button>
+        <button class="modal-close-btn" onclick="goToPayScreen1()">← Back</button>
+      </div>
+
+      <!-- SCREEN 3: Success -->
+      <div id="payScreen3" style="display:none;text-align:center;padding:20px 0;">
+        <div style="font-size:64px;margin-bottom:16px;">🎉</div>
+        <div style="font-family:var(--display);font-size:24px;font-weight:900;margin-bottom:8px;color:var(--text);">You're now Pro!</div>
+        <div style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">Unlimited invoices unlocked.<br/>Welcome to the Pro plan!</div>
+        <button class="pay-btn" onclick="closePaywall()">Start Processing →</button>
+      </div>
+
     </div>
   </div>
 </div>
@@ -800,20 +837,84 @@
 
   // ── Paywall ───────────────────────────────────────────────────────────────
   async function showPaywall() {
-    try { const res=await fetch(`${API}/payment/info`,{credentials:"include"}); const d=await res.json(); document.getElementById("payLink").href=d.payment_link; } catch(e) {}
+    try {
+      const res = await fetch(`${API}/payment/info`, {credentials:"include"});
+      const d   = await res.json();
+      document.getElementById("payLink").href = d.payment_link;
+    } catch(e) {}
+    goToPayScreen1();
     document.getElementById("paywallOverlay").classList.add("show");
   }
-  function closePaywall() { document.getElementById("paywallOverlay").classList.remove("show"); }
-  function handlePayClick() {
-    setTimeout(()=>{ const ref=prompt("After paying, paste your Razorpay Payment ID to activate Pro:"); if(ref&&ref.trim()) activatePro(ref.trim()); },2000);
+
+  function goToPayScreen1() {
+    document.getElementById("payScreen1").style.display = "block";
+    document.getElementById("payScreen2").style.display = "none";
+    document.getElementById("payScreen3").style.display = "none";
+    document.getElementById("modalEmoji").textContent = "🚀";
+    document.getElementById("modalTitle").innerHTML = "Upgrade to <span>Pro</span>";
   }
-  async function activatePro(ref) {
+
+  function goToPayScreen2() {
+    // Small delay so Razorpay tab opens first
+    setTimeout(() => {
+      document.getElementById("payScreen1").style.display = "none";
+      document.getElementById("payScreen2").style.display = "block";
+      document.getElementById("modalEmoji").textContent = "💳";
+      document.getElementById("modalTitle").innerHTML = "Enter <span>Payment ID</span>";
+      document.getElementById("paymentIdInput").focus();
+    }, 800);
+  }
+
+  function closePaywall() {
+    document.getElementById("paywallOverlay").classList.remove("show");
+    // Reset to screen 1 for next time
+    setTimeout(goToPayScreen1, 300);
+  }
+
+  async function submitPaymentId() {
+    const ref = document.getElementById("paymentIdInput").value.trim();
+    const err = document.getElementById("pay-error");
+    const btn = document.getElementById("activateBtn");
+    err.style.display = "none";
+
+    if (!ref) {
+      err.textContent = "Please paste your Payment ID first.";
+      err.style.display = "block";
+      return;
+    }
+    if (!ref.startsWith("pay_") && ref.length < 8) {
+      err.textContent = "That doesn't look like a valid Payment ID. It should start with pay_";
+      err.style.display = "block";
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Activating…";
+
     try {
-      const res = await fetch(`${API}/payment/activate`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({payment_ref:ref})});
-      const d   = await res.json();
-      if (res.ok) { setUser(d.user); closePaywall(); showToast("🎉 Pro activated! Unlimited invoices unlocked.","success"); }
-      else showToast(d.error,"error");
-    } catch(e) { showToast("Connection error.","error"); }
+      const res = await fetch(`${API}/payment/activate`, {
+        method:"POST", credentials:"include",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({payment_ref: ref})
+      });
+      const d = await res.json();
+      if (res.ok) {
+        setUser(d.user);
+        // Show success screen
+        document.getElementById("payScreen2").style.display = "none";
+        document.getElementById("payScreen3").style.display = "block";
+        document.getElementById("modalEmoji").textContent = "🎉";
+        document.getElementById("modalTitle").innerHTML = "Welcome to <span>Pro!</span>";
+      } else {
+        err.textContent = d.error || "Something went wrong. Try again.";
+        err.style.display = "block";
+      }
+    } catch(e) {
+      err.textContent = "Connection error. Try again.";
+      err.style.display = "block";
+    }
+    btn.disabled = false;
+    btn.textContent = "✅ Activate Pro Account";
   }
 
   // ── Toast ─────────────────────────────────────────────────────────────────

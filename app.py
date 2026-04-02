@@ -63,6 +63,13 @@ class User(db.Model):
                 "is_paid":self.is_paid,"invoices_used":self.invoices_used,
                 "invoices_remaining":left}
 
+class PaymentRecord(db.Model):
+    """Stores every used Payment ID — prevents reuse by same or different user."""
+    id          = db.Column(db.Integer, primary_key=True)
+    payment_ref = db.Column(db.String(200), unique=True, nullable=False)
+    user_id     = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    used_at     = db.Column(db.DateTime, default=datetime.utcnow)
+
 with app.app_context():
     db.create_all()
 
@@ -152,11 +159,29 @@ def payment_info():
 @login_required
 def activate_paid():
     data = request.get_json()
-    if not data.get("payment_ref","").strip():
+    ref  = (data.get("payment_ref") or "").strip()
+
+    if not ref:
         return jsonify({"error":"Payment reference required"}), 400
+
+    # Block reuse — check if this Payment ID was already used by anyone
+    existing = PaymentRecord.query.filter_by(payment_ref=ref).first()
+    if existing:
+        return jsonify({"error":"This Payment ID has already been used. Each payment can only activate one account."}), 409
+
     user = get_current_user()
+
+    # Block if user is already paid (prevent double activation)
+    if user.is_paid:
+        return jsonify({"error":"Your account is already on the Pro plan."}), 400
+
+    # Record the payment ID so it can never be reused
+    record = PaymentRecord(payment_ref=ref, user_id=user.id)
+    db.session.add(record)
+
     user.is_paid = True
     db.session.commit()
+
     return jsonify({"message":"Account upgraded to Pro!","user":user.to_dict()})
 
 # ── OCR ────────────────────────────────────────────────────────────────────
