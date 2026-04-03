@@ -40,28 +40,76 @@ app.config["PERMANENT_SESSION_LIFETIME"]     = timedelta(days=30)
 CORS(app, supports_credentials=True, origins="*")
 db = SQLAlchemy(app)
 
-FREE_LIMIT     = 5
-PAID_PRICE     = "₹499/month"
+FREE_LIMIT          = 3        # Free users get 3 file uploads total
+PRO_MONTHLY_LIMIT   = 100      # Pro users get 100 file uploads/month
+OVERAGE_PRICE       = "₹100"   # Charge per 30 extra files
+OVERAGE_FILES       = 30       # Files per overage pack
+PAID_PRICE          = "₹499/month"
 RAZORPAY_LINK  = os.environ.get("RAZORPAY_LINK", "https://razorpay.me/your-link")
 ALLOWED_EXT    = {"jpg", "jpeg", "png", "csv"}
 
 # ── Models ─────────────────────────────────────────────────────────────────
 class User(db.Model):
-    id            = db.Column(db.Integer, primary_key=True)
-    email         = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False)
-    name          = db.Column(db.String(100), nullable=False)
-    is_paid       = db.Column(db.Boolean, default=False)
-    invoices_used = db.Column(db.Integer, default=0)
-    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+    id             = db.Column(db.Integer, primary_key=True)
+    email          = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash  = db.Column(db.String(256), nullable=False)
+    name           = db.Column(db.String(100), nullable=False)
+    is_paid          = db.Column(db.Boolean, default=False)
+    pro_expires_at   = db.Column(db.DateTime, nullable=True)   # when Pro expires
+    files_used_total = db.Column(db.Integer, default=0)        # total files ever uploaded
+    files_used_month = db.Column(db.Integer, default=0)        # files uploaded this month
+    overage_files    = db.Column(db.Integer, default=0)        # extra files bought via overage
+    month_reset_at   = db.Column(db.DateTime, nullable=True)   # when monthly counter last reset
+    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
 
     def set_password(self, pw):   self.password_hash = generate_password_hash(pw)
     def check_password(self, pw): return check_password_hash(self.password_hash, pw)
+
+    def check_expiry(self):
+        """Auto-revoke Pro if subscription has expired."""
+        if self.is_paid and self.pro_expires_at and datetime.utcnow() > self.pro_expires_at:
+            self.is_paid        = False
+            self.pro_expires_at = None
+            db.session.commit()
+
+    def reset_month_if_needed(self):
+        """Reset monthly file counter on the 1st of each month."""
+        now = datetime.utcnow()
+        if self.month_reset_at is None or (
+            now.year > self.month_reset_at.year or now.month > self.month_reset_at.month
+        ):
+            self.files_used_month = 0
+            self.overage_files    = 0   # overage also resets monthly
+            self.month_reset_at   = now
+            db.session.commit()
+
+    def days_left(self):
+        if not self.is_paid or not self.pro_expires_at:
+            return None
+        delta = self.pro_expires_at - datetime.utcnow()
+        return max(0, delta.days)
+
     def to_dict(self):
-        left = None if self.is_paid else max(0, FREE_LIMIT - self.invoices_used)
-        return {"id":self.id,"email":self.email,"name":self.name,
-                "is_paid":self.is_paid,"invoices_used":self.invoices_used,
-                "invoices_remaining":left}
+        self.check_expiry()
+        self.reset_month_if_needed()
+        if self.is_paid:
+            total_allowed = PRO_MONTHLY_LIMIT + self.overage_files
+            files_left    = max(0, total_allowed - self.files_used_month)
+        else:
+            total_allowed = FREE_LIMIT
+            files_left    = max(0, FREE_LIMIT - self.files_used_total)
+        return {
+            "id":               self.id,
+            "email":            self.email,
+            "name":             self.name,
+            "is_paid":          self.is_paid,
+            "files_used_total": self.files_used_total,
+            "files_used_month": self.files_used_month,
+            "files_left":       files_left,
+            "overage_files":    self.overage_files,
+            "pro_expires_at":   self.pro_expires_at.isoformat() if self.pro_expires_at else None,
+            "days_left":        self.days_left(),
+        }
 
 class PaymentRecord(db.Model):
     """Stores every used Payment ID — prevents reuse by same or different user."""
@@ -171,18 +219,56 @@ def activate_paid():
 
     user = get_current_user()
 
-    # Block if user is already paid (prevent double activation)
-    if user.is_paid:
-        return jsonify({"error":"Your account is already on the Pro plan."}), 400
+    # Block if user is already on active Pro (not expired)
+    if user.is_paid and user.pro_expires_at and datetime.utcnow() < user.pro_expires_at:
+        days = user.days_left()
+        return jsonify({"error": f"Your Pro plan is still active for {days} more day(s). You can renew when it expires."}), 400
 
     # Record the payment ID so it can never be reused
     record = PaymentRecord(payment_ref=ref, user_id=user.id)
     db.session.add(record)
 
-    user.is_paid = True
+    # Set Pro active for exactly 30 days from now
+    user.is_paid        = True
+    user.pro_expires_at = datetime.utcnow() + timedelta(days=30)
+    user.month_used     = 0
+    user.month_reset_at = datetime.utcnow()
     db.session.commit()
 
-    return jsonify({"message":"Account upgraded to Pro!","user":user.to_dict()})
+    return jsonify({
+        "message": f"Pro activated! Valid until {user.pro_expires_at.strftime('%d %b %Y')}.",
+        "user": user.to_dict()
+    })
+
+@app.route("/payment/overage", methods=["POST"])
+@login_required
+def activate_overage():
+    """User buys 30 extra file uploads for ₹100."""
+    data = request.get_json()
+    ref  = (data.get("payment_ref") or "").strip()
+
+    if not ref:
+        return jsonify({"error": "Payment reference required"}), 400
+
+    user = get_current_user()
+    if not user.is_paid:
+        return jsonify({"error": "You need an active Pro plan to buy overage packs."}), 400
+
+    # Block reuse of same payment ID
+    existing = PaymentRecord.query.filter_by(payment_ref=ref).first()
+    if existing:
+        return jsonify({"error": "This Payment ID has already been used."}), 409
+
+    record = PaymentRecord(payment_ref=ref, user_id=user.id)
+    db.session.add(record)
+    user.overage_files += OVERAGE_FILES
+    db.session.commit()
+
+    return jsonify({
+        "message": f"✅ {OVERAGE_FILES} extra file uploads added!",
+        "user":    user.to_dict()
+    })
+
 
 # ── OCR ────────────────────────────────────────────────────────────────────
 def extract_text_from_image(filepath):
@@ -288,60 +374,124 @@ def process_files():
     if not files or all(f.filename=="" for f in files):
         return jsonify({"error":"No files selected"}), 400
 
-    if not user.is_paid and (user.invoices_used >= FREE_LIMIT):
-        return jsonify({"error":"free_limit_reached",
-                        "message":f"You've used all {FREE_LIMIT} free invoices.",
-                        "payment_link":RAZORPAY_LINK,"price":PAID_PRICE}), 402
+    # Auto-check subscription expiry and monthly reset
+    user.check_expiry()
+    user.reset_month_if_needed()
 
-    seen = set(); results = []; start = time.time(); count = 0
+    # Count valid files in this upload
+    valid_files = [f for f in files if f.filename and allowed_file(f.filename)]
+    num_files   = len(valid_files)
+
+    if not user.is_paid:
+        # Free: count total files ever uploaded
+        if user.files_used_total >= FREE_LIMIT:
+            return jsonify({"error":"free_limit_reached",
+                            "message":f"You've used all {FREE_LIMIT} free file uploads. Upgrade to Pro for 100 files/month.",
+                            "payment_link":RAZORPAY_LINK,"price":PAID_PRICE}), 402
+    else:
+        # Pro: count files this month (base 100 + any overage packs bought)
+        total_allowed = PRO_MONTHLY_LIMIT + user.overage_files
+        if user.files_used_month >= total_allowed:
+            return jsonify({"error":"monthly_limit_reached",
+                            "message":f"You've used all {total_allowed} file uploads this month.",
+                            "overage_available": True,
+                            "overage_price": OVERAGE_PRICE,
+                            "overage_files": OVERAGE_FILES,
+                            "payment_link":RAZORPAY_LINK}), 402
+
+    seen = set(); results = []; start = time.time(); file_count = 0
 
     for file in files:
         if not file.filename: continue
         if not allowed_file(file.filename):
-            results.append({"filename":file.filename,"status":"error","error":"Unsupported type. Use JPG, PNG, or CSV.","data":{},"warnings":[]}); continue
+            results.append({"filename":file.filename,"status":"error",
+                            "error":"Unsupported type. Use JPG, PNG, or CSV.",
+                            "data":{},"warnings":[]}); continue
+
+        # Check per-file limit (free users mid-batch)
+        if not user.is_paid and (user.files_used_total + file_count) >= FREE_LIMIT:
+            results.append({"filename":file.filename,"status":"error",
+                            "error":"Free file limit reached. Upgrade to Pro.",
+                            "data":{},"warnings":[]}); continue
+
+        # Check Pro monthly limit mid-batch
+        if user.is_paid:
+            total_allowed = PRO_MONTHLY_LIMIT + user.overage_files
+            if (user.files_used_month + file_count) >= total_allowed:
+                results.append({"filename":file.filename,"status":"error",
+                                "error":"Monthly file limit reached. Buy an overage pack to continue.",
+                                "data":{},"warnings":[]}); continue
+
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
         ext = filename.rsplit(".",1)[1].lower()
+
         if ext == "csv":
             parsed = parse_invoice_from_csv(filepath)
             if not parsed:
-                results.append({"filename":filename,"status":"error","error":"Could not parse CSV.","data":{},"warnings":[]})
+                results.append({"filename":filename,"status":"error",
+                                "error":"Could not parse CSV. Check column names.",
+                                "data":{},"warnings":[]})
             else:
+                # Each CSV file = 1 file upload regardless of rows
+                row_results = []
                 for idx, inv in enumerate(parsed):
-                    if not user.is_paid and (user.invoices_used+count) >= FREE_LIMIT:
-                        results.append({"filename":f"{filename} (row {idx+1})","status":"error","error":"Free limit reached. Upgrade to continue.","data":{},"warnings":[]})
-                        continue
                     w = validate_invoice(inv, seen)
-                    results.append({"filename":f"{filename} (row {idx+1})","status":"warning" if w else "success","data":inv,"warnings":w})
-                    count += 1
+                    row_results.append({
+                        "filename": f"{filename} (row {idx+1})",
+                        "status":   "warning" if w else "success",
+                        "data":     inv,
+                        "warnings": w
+                    })
+                results.extend(row_results)
+                file_count += 1   # count the FILE, not the rows
         else:
-            if not user.is_paid and (user.invoices_used+count) >= FREE_LIMIT:
-                results.append({"filename":filename,"status":"error","error":"Free limit reached. Upgrade to continue.","data":{},"warnings":[]})
+            raw = extract_text_from_image(filepath)
+            if raw is None:
+                results.append({"filename":filename,"status":"error",
+                                "error":"Image OCR unavailable. Please use CSV format.",
+                                "data":{},"warnings":[]})
             else:
-                raw = extract_text_from_image(filepath)
-                if raw is None:
-                    results.append({"filename":filename,"status":"error","error":"Image OCR unavailable. Please use CSV format.","data":{},"warnings":[]})
-                else:
-                    inv = parse_invoice_from_text(raw)
-                    w = validate_invoice(inv, seen)
-                    results.append({"filename":filename,"status":"warning" if w else "success","data":inv,"warnings":w,"raw_text_preview":raw[:300]})
-                    count += 1
+                inv = parse_invoice_from_text(raw)
+                w   = validate_invoice(inv, seen)
+                results.append({"filename":filename,"status":"warning" if w else "success",
+                                "data":inv,"warnings":w,"raw_text_preview":raw[:300]})
+                file_count += 1   # count the FILE
+
         try: os.remove(filepath)
         except: pass
 
-    user.invoices_used += count
+    # Update counters — FILE based
+    user.files_used_total += file_count
+    user.files_used_month += file_count
     db.session.commit()
     elapsed = round(time.time()-start, 2)
     session_id = str(uuid.uuid4())[:8]
     with open(os.path.join(OUTPUT_FOLDER,f"invoices_{session_id}.json"),"w") as f: json.dump(results,f,indent=2)
     export_to_excel(results, os.path.join(OUTPUT_FOLDER,f"invoices_{session_id}.xlsx"))
-    return jsonify({"results":results,"processing_time":elapsed,"session_id":session_id,
-                    "invoices_used":user.invoices_used,"is_paid":user.is_paid,
-                    "invoices_remaining":None if user.is_paid else max(0,FREE_LIMIT-user.invoices_used),
-                    "summary":{"success":sum(1 for r in results if r["status"]=="success"),
-                               "warnings":sum(1 for r in results if r["status"]=="warning"),
-                               "errors":sum(1 for r in results if r["status"]=="error")}})
+    if user.is_paid:
+        total_allowed   = PRO_MONTHLY_LIMIT + user.overage_files
+        files_left      = max(0, total_allowed - user.files_used_month)
+    else:
+        files_left      = max(0, FREE_LIMIT - user.files_used_total)
+
+    return jsonify({
+        "results":          results,
+        "processing_time":  elapsed,
+        "session_id":       session_id,
+        "is_paid":          user.is_paid,
+        "files_used_month": user.files_used_month,
+        "files_left":       files_left,
+        "days_left":        user.days_left(),
+        "overage_price":    OVERAGE_PRICE,
+        "overage_files":    OVERAGE_FILES,
+        "summary": {
+            "success":  sum(1 for r in results if r["status"]=="success"),
+            "warnings": sum(1 for r in results if r["status"]=="warning"),
+            "errors":   sum(1 for r in results if r["status"]=="error"),
+        }
+    })
 
 @app.route("/download/excel/<session_id>")
 @login_required

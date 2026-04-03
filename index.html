@@ -440,7 +440,7 @@
           <span>Upgrade to Pro for unlimited processing at just ₹499/month</span>
         </div>
       </div>
-      <button class="upgrade-cta" onclick="showPaywall()">Upgrade to Pro →</button>
+      <button class="upgrade-cta" id="banner-upgrade-btn" onclick="showPaywall()">Upgrade to Pro →</button>
     </div>
 
     <div class="card" style="margin-bottom:24px;">
@@ -550,10 +550,73 @@
       <div id="payScreen3" style="display:none;text-align:center;padding:20px 0;">
         <div style="font-size:64px;margin-bottom:16px;">🎉</div>
         <div style="font-family:var(--display);font-size:24px;font-weight:900;margin-bottom:8px;color:var(--text);">You're now Pro!</div>
-        <div style="color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6;">Unlimited invoices unlocked.<br/>Welcome to the Pro plan!</div>
+        <div style="color:var(--muted);font-size:14px;margin-bottom:8px;line-height:1.6;">500 invoices/month unlocked.</div>
+        <div style="background:var(--green-l);border:1px solid rgba(22,101,52,0.2);border-radius:10px;padding:12px;margin-bottom:24px;">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Your Pro plan is active until</div>
+          <div style="font-family:var(--display);font-size:20px;font-weight:900;color:var(--green);" id="proExpiryDate">30 days</div>
+        </div>
         <button class="pay-btn" onclick="closePaywall()">Start Processing →</button>
       </div>
 
+    </div>
+  </div>
+</div>
+
+<!-- Overage Modal -->
+<div class="overlay" id="overageOverlay">
+  <div class="modal">
+    <div class="modal-header" style="background:linear-gradient(160deg,#1a2e18,#0d1f2d);">
+      <span class="modal-emoji">📦</span>
+      <div class="modal-title">Buy Extra <span>Files</span></div>
+    </div>
+    <div class="modal-body">
+      <div class="price-row">
+        <span class="price-currency">₹</span>
+        <span class="price-amount">100</span>
+        <span class="price-period">one-time</span>
+      </div>
+      <div class="price-note">30 extra file uploads · valid this month only</div>
+      <div class="features" style="margin-bottom:20px;">
+        <div class="feature-item"><span class="feature-check">✓</span> 30 additional file uploads</div>
+        <div class="feature-item"><span class="feature-check">✓</span> Each file can have unlimited rows</div>
+        <div class="feature-item"><span class="feature-check">✓</span> Valid until end of this month</div>
+      </div>
+
+      <!-- Screen 1: Pay -->
+      <div id="overageScreen1">
+        <a class="pay-btn" id="overagePayLink" href="#" target="_blank"
+           style="background:linear-gradient(135deg,#166534,#15803d);"
+           onclick="goToOverageScreen2()">Pay ₹100 via Razorpay →</a>
+        <button class="modal-close-btn" onclick="closeOverageModal()">Maybe later</button>
+      </div>
+
+      <!-- Screen 2: Enter payment ID -->
+      <div id="overageScreen2" style="display:none;">
+        <div style="font-size:13px;color:var(--muted);text-align:center;margin-bottom:16px;line-height:1.6;">
+          After paying, paste your Razorpay Payment ID below.<br/>
+          <span style="font-size:12px;">(starts with <code style="font-family:var(--mono);color:var(--saffron2);">pay_</code>)</span>
+        </div>
+        <input type="text" id="overagePaymentId" class="form-input"
+               placeholder="pay_ABC123xyz"
+               style="font-family:var(--mono);font-size:14px;margin-bottom:12px;"/>
+        <div class="auth-error" id="overage-error" style="margin-bottom:12px;"></div>
+        <button class="pay-btn" onclick="submitOveragePayment()"
+                style="background:linear-gradient(135deg,#166534,#15803d);">
+          ✅ Activate 30 Extra Files
+        </button>
+        <button class="modal-close-btn" onclick="goToOverageScreen1()">← Back</button>
+      </div>
+
+      <!-- Screen 3: Success -->
+      <div id="overageScreen3" style="display:none;text-align:center;padding:16px 0;">
+        <div style="font-size:56px;margin-bottom:12px;">🎉</div>
+        <div style="font-family:var(--display);font-size:22px;font-weight:900;margin-bottom:8px;">30 files added!</div>
+        <div style="color:var(--muted);font-size:14px;margin-bottom:20px;">Keep processing your invoices.</div>
+        <button class="pay-btn" onclick="closeOverageModal()"
+                style="background:linear-gradient(135deg,#166534,#15803d);">
+          Continue →
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -901,6 +964,9 @@
       if (res.ok) {
         setUser(d.user);
         // Show success screen
+        setUser(d.user);
+        const expiry = d.user.pro_expires_at ? new Date(d.user.pro_expires_at).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}) : "30 days";
+        document.getElementById("proExpiryDate").textContent = expiry;
         document.getElementById("payScreen2").style.display = "none";
         document.getElementById("payScreen3").style.display = "block";
         document.getElementById("modalEmoji").textContent = "🎉";
@@ -915,6 +981,65 @@
     }
     btn.disabled = false;
     btn.textContent = "✅ Activate Pro Account";
+  }
+
+  // ── Overage ──────────────────────────────────────────────────────────────
+  async function showOverageModal() {
+    try {
+      const res = await fetch(`${API}/payment/info`, {credentials:"include"});
+      const d   = await res.json();
+      document.getElementById("overagePayLink").href = d.payment_link;
+    } catch(e) {}
+    goToOverageScreen1();
+    document.getElementById("overageOverlay").classList.add("show");
+  }
+
+  function goToOverageScreen1() {
+    document.getElementById("overageScreen1").style.display = "block";
+    document.getElementById("overageScreen2").style.display = "none";
+    document.getElementById("overageScreen3").style.display = "none";
+  }
+
+  function goToOverageScreen2() {
+    setTimeout(() => {
+      document.getElementById("overageScreen1").style.display = "none";
+      document.getElementById("overageScreen2").style.display = "block";
+      document.getElementById("overagePaymentId").focus();
+    }, 800);
+  }
+
+  function closeOverageModal() {
+    document.getElementById("overageOverlay").classList.remove("show");
+    setTimeout(goToOverageScreen1, 300);
+  }
+
+  async function submitOveragePayment() {
+    const ref = document.getElementById("overagePaymentId").value.trim();
+    const err = document.getElementById("overage-error");
+    err.style.display = "none";
+
+    if (!ref) { err.textContent = "Please paste your Payment ID."; err.style.display = "block"; return; }
+    if (!ref.startsWith("pay_") && ref.length < 8) {
+      err.textContent = "Invalid Payment ID — should start with pay_";
+      err.style.display = "block"; return;
+    }
+
+    try {
+      const res = await fetch(`${API}/payment/overage`, {
+        method:"POST", credentials:"include",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({payment_ref: ref})
+      });
+      const d = await res.json();
+      if (res.ok) {
+        setUser(d.user);
+        document.getElementById("overageScreen2").style.display = "none";
+        document.getElementById("overageScreen3").style.display = "block";
+      } else {
+        err.textContent = d.error || "Something went wrong.";
+        err.style.display = "block";
+      }
+    } catch(e) { err.textContent = "Connection error."; err.style.display = "block"; }
   }
 
   // ── Toast ─────────────────────────────────────────────────────────────────
