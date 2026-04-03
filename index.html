@@ -945,16 +945,113 @@
 
   function updateUsage() {
     if (!currentUser) return;
+
     const pill   = document.getElementById("usage-pill");
     const banner = document.getElementById("upgrade-banner");
     const bc     = document.getElementById("banner-count");
+    const strip  = document.getElementById("usageStrip");
+
+    // Always show the strip when logged in
+    strip.classList.add("show");
+
     if (currentUser.is_paid) {
-      pill.textContent = "✓ Pro"; pill.className = "pill pro";
-      banner.classList.remove("show");
+      const days      = currentUser.days_left ?? 30;
+      const filesLeft = currentUser.files_left ?? 100;
+      const filesUsed = currentUser.files_used_month ?? 0;
+      const filePct   = Math.min(100, Math.round((filesUsed / 100) * 100));
+
+      // Topbar pill
+      pill.textContent = `Pro · ${filesLeft} files · ${days}d`;
+      pill.className   = "pill pro";
+
+      // Strip — files this month
+      document.getElementById("usageFileLabel").textContent = "Files This Month";
+      document.getElementById("usageFileValue").textContent = `${filesUsed} / 100`;
+      const fileBar = document.getElementById("usageFileBar");
+      fileBar.style.width = filePct + "%";
+      fileBar.className = "usage-bar-fill " + (filePct >= 90 ? "danger" : filePct >= 70 ? "warn" : "safe");
+
+      // Strip — days left
+      document.getElementById("usageDaysBlock").style.display   = "flex";
+      document.getElementById("usageDaysDivider").style.display = "block";
+      const daysPct = Math.min(100, Math.round((days / 30) * 100));
+      document.getElementById("usageDaysValue").textContent = `${days} day${days!==1?"s":""} left`;
+      const daysBar = document.getElementById("usageDaysBar");
+      daysBar.style.width = daysPct + "%";
+      daysBar.className = "usage-bar-fill " + (days <= 5 ? "danger" : days <= 10 ? "warn" : "safe");
+
+      // Strip — monthly reset countdown
+      const now        = new Date();
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+      const daysToReset = daysInMonth - now.getDate() + 1;
+      document.getElementById("usageResetBlock").style.display  = "flex";
+      document.getElementById("usageResetValue").textContent    = `${daysToReset} day${daysToReset!==1?"s":""}`;
+      const resetPct = Math.round((daysToReset / daysInMonth) * 100);
+      document.getElementById("usageResetBar").style.width = resetPct + "%";
+
+      // Strip — plan badge
+      document.getElementById("usagePlanName").textContent  = "PRO PLAN";
+      document.getElementById("usagePlanName").className    = "usage-plan-name pro";
+      const planBtn = document.getElementById("usagePlanAction");
+      if (filesLeft <= 10) {
+        planBtn.textContent = "Buy 30 more for ₹100 →";
+        planBtn.className   = "usage-plan-action green";
+        planBtn.onclick     = showOverageModal;
+      } else {
+        planBtn.textContent = "Renew / Manage →";
+        planBtn.className   = "usage-plan-action green";
+        planBtn.onclick     = showPaywall;
+      }
+
+      // Banner — only show when urgent
+      if (days <= 5) {
+        bc.textContent = `⚠️ Pro expires in ${days} day${days!==1?"s":""}! Renew now.`;
+        document.getElementById("banner-upgrade-btn").textContent = "Renew Pro →";
+        document.getElementById("banner-upgrade-btn").onclick     = showPaywall;
+        banner.classList.add("show");
+      } else if (filesLeft <= 10) {
+        bc.textContent = `Only ${filesLeft} file upload${filesLeft!==1?"s":""} left this month.`;
+        document.getElementById("banner-upgrade-btn").textContent = "Buy 30 more for ₹100 →";
+        document.getElementById("banner-upgrade-btn").onclick     = showOverageModal;
+        banner.classList.add("show");
+      } else {
+        banner.classList.remove("show");
+      }
+
     } else {
-      const left = currentUser.invoices_remaining ?? Math.max(0, 5 - currentUser.invoices_used);
-      pill.textContent = `${left} left`; pill.className = "pill free";
-      bc.textContent = `${left} invoice${left!==1?"s":""}`;
+      // FREE USER
+      const filesLeft = currentUser.files_left ?? Math.max(0, 3 - (currentUser.files_used_total||0));
+      const filesUsed = currentUser.files_used_total ?? 0;
+      const filePct   = Math.min(100, Math.round((filesUsed / 3) * 100));
+
+      // Topbar pill
+      pill.textContent = `${filesLeft} file${filesLeft!==1?"s":""} left`;
+      pill.className   = "pill free";
+
+      // Strip — files used
+      document.getElementById("usageFileLabel").textContent = "Free Files Used";
+      document.getElementById("usageFileValue").textContent = `${filesUsed} / 3`;
+      const fileBar = document.getElementById("usageFileBar");
+      fileBar.style.width = filePct + "%";
+      fileBar.className = "usage-bar-fill " + (filePct >= 100 ? "danger" : filePct >= 67 ? "warn" : "safe");
+
+      // Hide Pro-only blocks
+      document.getElementById("usageDaysBlock").style.display   = "none";
+      document.getElementById("usageDaysDivider").style.display = "none";
+      document.getElementById("usageResetBlock").style.display  = "none";
+
+      // Strip — plan badge
+      document.getElementById("usagePlanName").textContent  = "FREE PLAN";
+      document.getElementById("usagePlanName").className    = "usage-plan-name free";
+      const planBtn = document.getElementById("usagePlanAction");
+      planBtn.textContent = "Upgrade to Pro →";
+      planBtn.className   = "usage-plan-action";
+      planBtn.onclick     = showPaywall;
+
+      // Banner — always show for free users
+      bc.textContent = `${filesLeft} free file upload${filesLeft!==1?"s":""} remaining`;
+      document.getElementById("banner-upgrade-btn").textContent = "Upgrade to Pro →";
+      document.getElementById("banner-upgrade-btn").onclick     = showPaywall;
       banner.classList.add("show");
     }
   }

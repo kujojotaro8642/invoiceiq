@@ -19,11 +19,12 @@ OUTPUT_FOLDER = "/tmp/invoiceiq_outputs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# ── DB path: use /tmp on Render (writable), local file otherwise ──────────
-DB_PATH = os.environ.get("DATABASE_URL", f"sqlite:////tmp/invoiceiq.db")
-# Render sets DATABASE_URL for Postgres. For SQLite on free tier, /tmp is writable.
-if DB_PATH.startswith("sqlite:///") and not DB_PATH.startswith("sqlite:////tmp"):
-    DB_PATH = f"sqlite:////tmp/invoiceiq.db"
+# ── DB: PostgreSQL on Render, SQLite locally ──────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if DATABASE_URL.startswith("postgres://"):
+    # Render gives postgres:// but SQLAlchemy needs postgresql://
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+DB_PATH = DATABASE_URL if DATABASE_URL else f"sqlite:////tmp/invoiceiq.db"
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
 
