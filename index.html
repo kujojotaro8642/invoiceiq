@@ -278,6 +278,94 @@
     .toast{display:none;position:fixed;bottom:24px;right:24px;background:white;border:1.5px solid var(--border);padding:12px 18px;border-radius:12px;font-size:14px;font-weight:500;z-index:200;box-shadow:var(--shadow-lg);animation:slideUp 0.2s ease;max-width:320px;}
     .toast.error{border-color:rgba(220,38,38,0.3);color:var(--red);}
     .toast.success{border-color:rgba(22,101,52,0.3);color:var(--green);}
+    /* ── Usage Strip ── */
+    .usage-strip{
+      background:white;
+      border-bottom:1px solid var(--border);
+      padding:0 40px;
+      display:none;
+    }
+    .usage-strip.show{ display:block; }
+    .usage-strip-inner{
+      max-width:960px;
+      margin:0 auto;
+      padding:12px 0;
+      display:flex;
+      align-items:center;
+      gap:24px;
+    }
+    .usage-block{
+      display:flex;
+      flex-direction:column;
+      gap:3px;
+      flex:1;
+    }
+    .usage-block-top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+    }
+    .usage-block-label{
+      font-size:11px;
+      font-weight:600;
+      color:var(--muted);
+      text-transform:uppercase;
+      letter-spacing:0.5px;
+      font-family:var(--mono);
+    }
+    .usage-block-value{
+      font-size:12px;
+      font-weight:700;
+      color:var(--text2);
+      font-family:var(--mono);
+    }
+    .usage-bar{
+      height:5px;
+      background:var(--border);
+      border-radius:99px;
+      overflow:hidden;
+    }
+    .usage-bar-fill{
+      height:100%;
+      border-radius:99px;
+      transition:width 0.5s ease;
+      background:linear-gradient(90deg,var(--saffron),var(--saffron2));
+    }
+    .usage-bar-fill.safe { background:linear-gradient(90deg,var(--green2),#16a34a); }
+    .usage-bar-fill.warn { background:linear-gradient(90deg,var(--amber),#f59e0b); }
+    .usage-bar-fill.danger { background:linear-gradient(90deg,var(--red),#ef4444); }
+    .usage-divider{ width:1px; height:36px; background:var(--border); flex-shrink:0; }
+    .usage-plan-badge{
+      display:flex;
+      flex-direction:column;
+      align-items:flex-end;
+      gap:3px;
+      flex-shrink:0;
+    }
+    .usage-plan-name{
+      font-size:12px;
+      font-weight:700;
+      font-family:var(--mono);
+    }
+    .usage-plan-name.free{ color:var(--saffron2); }
+    .usage-plan-name.pro{ color:var(--green); }
+    .usage-plan-action{
+      font-size:11px;
+      color:var(--saffron);
+      cursor:pointer;
+      font-weight:600;
+      text-decoration:underline;
+      background:none;
+      border:none;
+      font-family:var(--sans);
+      padding:0;
+    }
+    .usage-plan-action.green{ color:var(--green2); }
+    @media(max-width:640px){
+      .usage-strip{ padding:0 16px; }
+      .usage-strip-inner{ flex-wrap:wrap; gap:12px; }
+      .usage-divider{ display:none; }
+    }
     @media(max-width:640px){.stats-grid{grid-template-columns:repeat(2,1fr);}.topbar{padding:0 16px;}.main-content{padding:24px 16px 60px;}.hero-title{font-size:36px;}.process-btn{width:calc(100% - 32px);margin:16px;}.file-list{padding:0 16px;}.upgrade-banner.show{flex-direction:column;}}
   </style>
 </head>
@@ -422,6 +510,58 @@
         <span id="user-name-display">User</span>
       </div>
       <button class="logout-btn" onclick="doLogout()">Sign out</button>
+    </div>
+  </div>
+
+  <!-- Usage Strip -->
+  <div class="usage-strip" id="usageStrip">
+    <div class="usage-strip-inner">
+
+      <!-- Files this month / total -->
+      <div class="usage-block" id="usageFileBlock">
+        <div class="usage-block-top">
+          <span class="usage-block-label" id="usageFileLabel">Files Used</span>
+          <span class="usage-block-value" id="usageFileValue">0 / 3</span>
+        </div>
+        <div class="usage-bar">
+          <div class="usage-bar-fill safe" id="usageFileBar" style="width:0%"></div>
+        </div>
+      </div>
+
+      <div class="usage-divider"></div>
+
+      <!-- Days remaining (Pro only) -->
+      <div class="usage-block" id="usageDaysBlock" style="display:none;">
+        <div class="usage-block-top">
+          <span class="usage-block-label">Subscription</span>
+          <span class="usage-block-value" id="usageDaysValue">30 days left</span>
+        </div>
+        <div class="usage-bar">
+          <div class="usage-bar-fill safe" id="usageDaysBar" style="width:100%"></div>
+        </div>
+      </div>
+
+      <div class="usage-divider" id="usageDaysDivider" style="display:none;"></div>
+
+      <!-- Monthly reset countdown (Pro only) -->
+      <div class="usage-block" id="usageResetBlock" style="display:none;">
+        <div class="usage-block-top">
+          <span class="usage-block-label">Resets in</span>
+          <span class="usage-block-value" id="usageResetValue">— days</span>
+        </div>
+        <div class="usage-bar">
+          <div class="usage-bar-fill safe" id="usageResetBar" style="width:50%"></div>
+        </div>
+      </div>
+
+      <div class="usage-divider"></div>
+
+      <!-- Plan info + action -->
+      <div class="usage-plan-badge">
+        <span class="usage-plan-name free" id="usagePlanName">FREE PLAN</span>
+        <button class="usage-plan-action" id="usagePlanAction" onclick="showPaywall()">Upgrade to Pro →</button>
+      </div>
+
     </div>
   </div>
 
@@ -790,6 +930,16 @@
     currentUser = u;
     document.getElementById("user-name-display").textContent = u.name.split(" ")[0];
     document.getElementById("user-avatar").textContent = u.name.charAt(0).toUpperCase();
+    updateUsage();
+  }
+
+  function syncUserFromProcess(d) {
+    // Update currentUser from a /process response
+    if (!currentUser) return;
+    currentUser.is_paid          = d.is_paid;
+    currentUser.files_used_month = d.files_used_month;
+    currentUser.files_left       = d.files_left;
+    currentUser.days_left        = d.days_left;
     updateUsage();
   }
 
