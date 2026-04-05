@@ -221,24 +221,28 @@ def activate_paid():
 
     user = get_current_user()
 
-    # Block if user is already on active Pro (not expired)
-    if user.is_paid and user.pro_expires_at and datetime.utcnow() < user.pro_expires_at:
-        days = user.days_left()
-        return jsonify({"error": f"Your Pro plan is still active for {days} more day(s). You can renew when it expires."}), 400
-
     # Record the payment ID so it can never be reused
     record = PaymentRecord(payment_ref=ref, user_id=user.id)
     db.session.add(record)
 
-    # Set Pro active for exactly 30 days from now
-    user.is_paid        = True
-    user.pro_expires_at = datetime.utcnow() + timedelta(days=30)
-    user.month_used     = 0
-    user.month_reset_at = datetime.utcnow()
+    is_renewal = user.is_paid and user.pro_expires_at and datetime.utcnow() < user.pro_expires_at
+
+    if is_renewal:
+        # Renewal — extend from current expiry date (not from today)
+        # This means early renewal doesn't lose any days
+        user.pro_expires_at = user.pro_expires_at + timedelta(days=30)
+    else:
+        # Fresh activation or reactivation after expiry
+        user.is_paid        = True
+        user.pro_expires_at = datetime.utcnow() + timedelta(days=30)
+        user.files_used_month = 0
+        user.month_reset_at   = datetime.utcnow()
+
     db.session.commit()
 
+    action = "renewed" if is_renewal else "activated"
     return jsonify({
-        "message": f"Pro activated! Valid until {user.pro_expires_at.strftime('%d %b %Y')}.",
+        "message": f"Pro {action}! Valid until {user.pro_expires_at.strftime('%d %b %Y')}.",
         "user": user.to_dict()
     })
 

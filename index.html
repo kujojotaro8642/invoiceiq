@@ -1105,7 +1105,7 @@
       if (res.status===401) { showToast("Session expired. Please sign in again.","error"); doLogout(); return; }
       if (res.status===402) { showPaywall(); return; }
       if (!res.ok) { showToast(d.error||"Server error","error"); return; }
-      if (currentUser) { currentUser.invoices_used=d.invoices_used; currentUser.invoices_remaining=d.invoices_remaining; currentUser.is_paid=d.is_paid; updateUsage(); }
+      syncUserFromProcess(d);
       renderResults(d);
     } catch(e) { showToast("Could not connect to server. The app may be waking up — try again in 30 seconds.","error"); }
     finally { btn.disabled=false; spinner.style.display="none"; btnText.textContent="⚡ Process Invoices"; }
@@ -1152,8 +1152,39 @@
       const d   = await res.json();
       document.getElementById("payLink").href = d.payment_link;
     } catch(e) {}
-    goToPayScreen1();
+
+    // If user is already Pro — show Renew mode, skip straight to payment
+    if (currentUser && currentUser.is_paid) {
+      goToRenewScreen();
+    } else {
+      goToPayScreen1();
+    }
     document.getElementById("paywallOverlay").classList.add("show");
+  }
+
+  function goToRenewScreen() {
+    // For renewal — go straight to Screen 2 (enter payment ID)
+    // but update the title and button text to say Renew not Upgrade
+    document.getElementById("payScreen1").style.display = "none";
+    document.getElementById("payScreen2").style.display = "block";
+    document.getElementById("payScreen3").style.display = "none";
+    document.getElementById("modalEmoji").textContent = "🔄";
+    document.getElementById("modalTitle").innerHTML = "Renew <span>Pro Plan</span>";
+    document.getElementById("activateBtn").textContent = "✅ Renew Pro — Another 30 Days";
+    document.getElementById("paymentIdInput").value = "";
+    document.getElementById("pay-error").style.display = "none";
+    // Update the instruction text for renewal
+    document.querySelector("#payScreen2 div[style*='text-align:center']").innerHTML = `
+      <div style="font-size:14px;color:var(--muted);line-height:1.6;">
+        Pay ₹499 on Razorpay, then paste your<br/>
+        <strong style="color:var(--text)">Payment ID</strong> below to renew for 30 more days.<br/>
+        <span style="font-size:12px;">(starts with <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;font-family:var(--mono);">pay_</code>)</span>
+      </div>
+      <a href="${document.getElementById('payLink').href}" target="_blank"
+         style="display:inline-block;margin-top:12px;padding:10px 20px;background:linear-gradient(135deg,var(--saffron),var(--saffron2));color:white;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;">
+        Pay ₹499 on Razorpay →
+      </a>`;
+    setTimeout(() => document.getElementById("paymentIdInput").focus(), 100);
   }
 
   function goToPayScreen1() {
@@ -1162,6 +1193,8 @@
     document.getElementById("payScreen3").style.display = "none";
     document.getElementById("modalEmoji").textContent = "🚀";
     document.getElementById("modalTitle").innerHTML = "Upgrade to <span>Pro</span>";
+    // Reset button text in case it was changed for renewal
+    document.getElementById("activateBtn").textContent = "✅ Activate Pro Account";
   }
 
   function goToPayScreen2() {
@@ -1209,15 +1242,24 @@
       });
       const d = await res.json();
       if (res.ok) {
-        setUser(d.user);
-        // Show success screen
+        const wasAlreadyPro = currentUser && currentUser.is_paid;
         setUser(d.user);
         const expiry = d.user.pro_expires_at ? new Date(d.user.pro_expires_at).toLocaleDateString("en-IN",{day:"numeric",month:"short",year:"numeric"}) : "30 days";
         document.getElementById("proExpiryDate").textContent = expiry;
         document.getElementById("payScreen2").style.display = "none";
         document.getElementById("payScreen3").style.display = "block";
-        document.getElementById("modalEmoji").textContent = "🎉";
-        document.getElementById("modalTitle").innerHTML = "Welcome to <span>Pro!</span>";
+        // Different message for renewal vs new activation
+        if (wasAlreadyPro) {
+          document.getElementById("modalEmoji").textContent = "🔄";
+          document.getElementById("modalTitle").innerHTML = "Pro <span>Renewed!</span>";
+          document.getElementById("payScreen3").querySelector("div[style*='font-size:24px']")
+            .textContent = "Renewed for 30 more days!";
+        } else {
+          document.getElementById("modalEmoji").textContent = "🎉";
+          document.getElementById("modalTitle").innerHTML = "Welcome to <span>Pro!</span>";
+          document.getElementById("payScreen3").querySelector("div[style*='font-size:24px']")
+            .textContent = "You're now Pro!";
+        }
       } else {
         err.textContent = d.error || "Something went wrong. Try again.";
         err.style.display = "block";
