@@ -21,10 +21,11 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # ── DB: PostgreSQL on Render, SQLite locally ──────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-if DATABASE_URL.startswith("postgres://"):
-    # Render gives postgres:// but SQLAlchemy needs postgresql://
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-DB_PATH = DATABASE_URL if DATABASE_URL else f"sqlite:////tmp/invoiceiq.db"
+if DATABASE_URL:
+    # Render gives postgres:// — convert to pg8000 dialect (pure Python, no C deps)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+pg8000://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+pg8000://", 1)
+DB_PATH = DATABASE_URL if DATABASE_URL else "sqlite:////tmp/invoiceiq.db"
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
 
