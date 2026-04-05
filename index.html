@@ -1147,44 +1147,55 @@
 
   // ── Paywall ───────────────────────────────────────────────────────────────
   async function showPaywall() {
+    // Fetch the Razorpay link FIRST, then build the screen
+    let paymentLink = "#";
     try {
       const res = await fetch(`${API}/payment/info`, {credentials:"include"});
       const d   = await res.json();
-      document.getElementById("payLink").href = d.payment_link;
+      paymentLink = d.payment_link || "#";
+      document.getElementById("payLink").href = paymentLink;
     } catch(e) {}
 
-    // If user is already Pro — show Renew mode, skip straight to payment
+    // Now open the correct screen with the real link ready
     if (currentUser && currentUser.is_paid) {
-      goToRenewScreen();
+      goToRenewScreen(paymentLink);
     } else {
       goToPayScreen1();
     }
     document.getElementById("paywallOverlay").classList.add("show");
   }
 
-  function goToRenewScreen() {
-    // For renewal — go straight to Screen 2 (enter payment ID)
-    // but update the title and button text to say Renew not Upgrade
+  function goToRenewScreen(paymentLink) {
+    const link = paymentLink || document.getElementById("payLink").href || "#";
+
     document.getElementById("payScreen1").style.display = "none";
     document.getElementById("payScreen2").style.display = "block";
     document.getElementById("payScreen3").style.display = "none";
-    document.getElementById("modalEmoji").textContent = "🔄";
-    document.getElementById("modalTitle").innerHTML = "Renew <span>Pro Plan</span>";
-    document.getElementById("activateBtn").textContent = "✅ Renew Pro — Another 30 Days";
-    document.getElementById("paymentIdInput").value = "";
-    document.getElementById("pay-error").style.display = "none";
-    // Update the instruction text for renewal
+    document.getElementById("modalEmoji").textContent   = "🔄";
+    document.getElementById("modalTitle").innerHTML     = "Renew <span>Pro Plan</span>";
+    document.getElementById("activateBtn").textContent  = "✅ Renew Pro — Another 30 Days";
+    document.getElementById("paymentIdInput").value     = "";
+    document.getElementById("pay-error").style.display  = "none";
+
+    // Build instruction block with the real, already-fetched Razorpay link
     document.querySelector("#payScreen2 div[style*='text-align:center']").innerHTML = `
-      <div style="font-size:14px;color:var(--muted);line-height:1.6;">
-        Pay ₹499 on Razorpay, then paste your<br/>
-        <strong style="color:var(--text)">Payment ID</strong> below to renew for 30 more days.<br/>
-        <span style="font-size:12px;">(starts with <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;font-family:var(--mono);">pay_</code>)</span>
+      <div style="font-size:14px;color:var(--muted);line-height:1.6;margin-bottom:12px;">
+        Pay ₹499 on Razorpay, then paste your
+        <strong style="color:var(--text)">Payment ID</strong> below to renew for 30 more days.
       </div>
-      <a href="${document.getElementById('payLink').href}" target="_blank"
-         style="display:inline-block;margin-top:12px;padding:10px 20px;background:linear-gradient(135deg,var(--saffron),var(--saffron2));color:white;border-radius:8px;font-weight:700;font-size:14px;text-decoration:none;">
-        Pay ₹499 on Razorpay →
-      </a>`;
-    setTimeout(() => document.getElementById("paymentIdInput").focus(), 100);
+      <a href="${link}" target="_blank" rel="noopener"
+         style="display:inline-block;margin-bottom:16px;padding:11px 24px;
+                background:linear-gradient(135deg,var(--saffron),var(--saffron2));
+                color:white;border-radius:10px;font-weight:700;font-size:14px;
+                text-decoration:none;box-shadow:0 4px 12px rgba(249,115,22,0.35);">
+        💳 Pay ₹499 on Razorpay →
+      </a>
+      <div style="font-size:12px;color:var(--muted2);">
+        After payment, copy the Payment ID (starts with
+        <code style="font-family:var(--mono);color:var(--saffron2);">pay_</code>) and paste below.
+      </div>`;
+
+    setTimeout(() => document.getElementById("paymentIdInput").focus(), 200);
   }
 
   function goToPayScreen1() {
